@@ -41,17 +41,18 @@
 #include "kick_detect.h"
 #include "bsp_imu.h"
 #include "bsp_beep.h"
-#include "bsp_motor.h"
+//#include "bsp_motor.h"
 #include "bsp_ws2812.h"
 
 /* -------------------------------------------------------------------------- */
 /*  Internal state                                                            */
 /* -------------------------------------------------------------------------- */
 
-static KickState_t  kick_state  = STATE_INIT;
+static KickState_t  kick_state  = STATE_IDLE;
 static KickResult_t kick_result = KICK_RESULT_NONE;
 static uint32_t     state_entry_tick = 0;
 static uint32_t     last_eval_tick   = 0;
+static uint8_t      init_checked = 0;
 
 /* Posture check — baseline orientation captured on transition to DETECT */
 static float baseline_roll  = 0.0f;
@@ -74,10 +75,7 @@ static float    vel_z_est       = 0.0f;
 static float    acc_z_prev      = 0.0f;
 static uint32_t last_sample_tick = 0;
 
-/* Vertical acceleration baseline (gravity component, ~9.8 m/s² when horizontal) */
-#define GRAVITY_MSS  9.8f
-
-/* Detection threshold for acc_z deviation from gravity (start of kick cycle) */
+/* Detection threshold for acc_z deviation from baseline (start of kick cycle) */
 #define KICK_START_THRESHOLD_MSS   3.0f
 
 /* -------------------------------------------------------------------------- */
@@ -167,7 +165,7 @@ static void kick_cycle_evaluate(void)
         kick_result = KICK_RESULT_BAD_FORM;
         BSP_WS2812_Yellow();
         BSP_Beep_Long();
-        BSP_Motor_Vibrate();
+//        BSP_Motor_Vibrate();
     }
     else
     {
@@ -189,7 +187,7 @@ static void kick_cycle_evaluate(void)
  */
 void KickDetect_Init(void)
 {
-    kick_state  = STATE_INIT;
+    kick_state  = STATE_IDLE;
     kick_result = KICK_RESULT_NONE;
     kick_cycle_reset();
     state_entry_tick = HAL_GetTick();
@@ -211,36 +209,38 @@ void KickDetect_Process(void)
     BSP_IMU_GetData(&imu);
     BSP_IMU_ClearDataReady();
 
-    /* ---- STATE_INIT: check horizontal posture ---- */
+    /* ---- STATE_IDLE: wait for key press ---- */
+    if (kick_state == STATE_IDLE) return;
+
+    /* ---- STATE_INIT: check horizontal posture (once only) ---- */
     if (kick_state == STATE_INIT)
     {
+        if (init_checked)
+        {
+            kick_result = KICK_RESULT_NONE;
+            return;   /* 已检测过，不再重复，等按键重新触发 */
+        }
+        init_checked = 1;
+
         float p = imu.pitch;
         float r = imu.roll;
 
-        /* Make angles positive for threshold comparison */
         if (p < 0.0f) p = -p;
         if (r < 0.0f) r = -r;
 
         if (p <= POSTURE_HORIZONTAL_THRESHOLD_DEG &&
             r <= POSTURE_HORIZONTAL_THRESHOLD_DEG)
         {
-            /* Posture OK — feedback and transition */
             BSP_WS2812_Green();
             BSP_Beep_Short();
-
-            /* Capture baseline orientation */
             baseline_roll  = imu.roll;
             baseline_pitch = imu.pitch;
-
             kick_set_state(STATE_POSTURE_OK);
         }
         else
         {
-            /* Not horizontal — warn user */
             BSP_WS2812_Red();
             BSP_Beep_Long();
-            BSP_Motor_Vibrate();
-            /* Stay in STATE_INIT */
         }
 
         kick_result = KICK_RESULT_NONE;
@@ -260,9 +260,8 @@ void KickDetect_Process(void)
     /* Check timeout */
     if ((HAL_GetTick() - state_entry_tick) > KICK_DETECT_TIMEOUT_MS)
     {
-        /* No activity for too long — go back to posture check */
-        BSP_WS2812_Off();
-        kick_set_state(STATE_INIT);
+        /* No activity for too long — go back to IDLE */
+        kick_set_state(STATE_IDLE);
         kick_result = KICK_RESULT_NONE;
         return;
     }
@@ -275,7 +274,7 @@ void KickDetect_Process(void)
     }
 
     /* ---- Kick cycle detection on vertical acceleration ---- */
-    float acc_z_motion = imu.acc_z - GRAVITY_MSS;
+    float acc_z_motion = imu.acc_bz;
 
     /* Start of kick cycle: acceleration deviates from gravity */
     if (!cycle_active)
@@ -307,7 +306,6 @@ void KickDetect_Process(void)
                 (HAL_GetTick() - last_eval_tick) > 1000U)
             {
                 kick_result = KICK_RESULT_NONE;
-                BSP_WS2812_Off();
             }
         }
         return;
@@ -331,8 +329,8 @@ void KickDetect_Process(void)
             dt = (float)(imu.timestamp - last_sample_tick) / 1000.0f;
             if (dt > 0.5f) dt = 0.01f;  /* Sanity clamp */
         }
-        acc_x_drift += imu.acc_x * dt;
-        acc_y_drift += imu.acc_y * dt;
+        acc_x_drift += imu.acc_bx * dt;
+        acc_y_drift += imu.acc_by * dt;
     }
     last_sample_tick = imu.timestamp;
 
@@ -393,14 +391,24 @@ KickResult_t KickDetect_GetResult(void)
 }
 
 /**
- * @brief  Reset state machine to INIT (e.g., on key press)
+ * @brief  按键触发：进入姿态检测
  */
-void KickDetect_Reset(void)
+void KickDetect_StartInit(void)
 {
+    init_checked = 0;
     kick_set_state(STATE_INIT);
     kick_result = KICK_RESULT_NONE;
     kick_cycle_reset();
-    BSP_WS2812_Off();
     BSP_Beep_Off();
-    BSP_Motor_Off();
+}
+
+/**
+ * @brief  Reset to IDLE
+ */
+void KickDetect_Reset(void)
+{
+    kick_set_state(STATE_IDLE);
+    kick_result = KICK_RESULT_NONE;
+    kick_cycle_reset();
+    BSP_Beep_Off();
 }

@@ -14,8 +14,10 @@
 /*  Internal state                                                            */
 /* -------------------------------------------------------------------------- */
 
-static WS2812_Color_t   ws2812_led;
-static uint16_t         ws2812_dma_buf[WS2812_BUF_SIZE];
+//static WS2812_Color_t   ws2812_led;
+//static uint16_t         ws2812_dma_buf[WS2812_BUF_SIZE];
+WS2812_Color_t   ws2812_led;
+uint16_t         ws2812_dma_buf[WS2812_BUF_SIZE];
 volatile uint8_t ws2812_busy;           /* 调试可见 */
 volatile uint16_t ws2812_dma_cnt;       /* DMA 完成计数 */
 
@@ -47,33 +49,12 @@ static void ws2812_encode_buffer(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/*  TIM4 restore — called by bsp_beep after beep                              */
-/* -------------------------------------------------------------------------- */
-
-//void BSP_WS2812_RestoreTimConfig(void)
-//{
-//    TIM_OC_InitTypeDef sConfigOC = {0};
-
-//    HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_3);
-
-//    __HAL_TIM_SET_PRESCALER(&htim4, WS2812_TIM_PRESCALER);
-//    __HAL_TIM_SET_AUTORELOAD(&htim4, WS2812_TIM_PERIOD);
-//    __HAL_TIM_SET_COUNTER(&htim4, 0);
-
-//    sConfigOC.OCMode     = TIM_OCMODE_PWM1;
-//    sConfigOC.Pulse      = 0;
-//    sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-//    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-//    HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_3);
-//}
-
-/* -------------------------------------------------------------------------- */
 /*  Public API                                                                */
 /* -------------------------------------------------------------------------- */
 
 void BSP_WS2812_Init(void)
 {
-//    /* CubeMX 设了 PD14=AF_OD，WS2812 需要推挽 → 改为 AF_PP */
+    /* CubeMX 设了 PD14=AF_OD，WS2812 需要推挽 → 改为 AF_PP */
 //    GPIO_InitTypeDef gpio = {0};
 //    gpio.Pin   = GPIO_PIN_14;
 //    gpio.Mode  = GPIO_MODE_AF_PP;
@@ -97,12 +78,15 @@ void BSP_WS2812_SetColor(uint8_t red, uint8_t green, uint8_t blue)
 
 void BSP_WS2812_Update(void)
 {
-    while (ws2812_busy) { }     /* Wait for previous transfer (~30us) */
-
-    ws2812_busy = 1;
     ws2812_encode_buffer();
-    HAL_TIM_PWM_Start_DMA(&htim4, TIM_CHANNEL_3,
-                          (uint32_t *)ws2812_dma_buf, WS2812_BUF_SIZE);
+
+    for (uint8_t n = 0; n < 3; n++)     /* 连发 3 次防丢帧 */
+    {
+        while (ws2812_busy) { }
+        ws2812_busy = 1;
+        HAL_TIM_PWM_Start_DMA(&htim4, TIM_CHANNEL_3,
+                              (uint32_t *)ws2812_dma_buf, WS2812_BUF_SIZE);
+    }
 }
 
 uint8_t BSP_WS2812_IsBusy(void)
@@ -140,12 +124,12 @@ void BSP_WS2812_Yellow(void)
 /*  HAL callback: DMA transfer complete                                       */
 /* -------------------------------------------------------------------------- */
 
-//void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
-//{
-//    if (htim->Instance == TIM4)
-//    {
-//        __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, 0);
-//        ws2812_busy = 0;
-//        ws2812_dma_cnt++;
-//    }
-//}
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM4)
+    {
+        __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, 0);
+        ws2812_busy = 0;
+        ws2812_dma_cnt++;
+    }
+}

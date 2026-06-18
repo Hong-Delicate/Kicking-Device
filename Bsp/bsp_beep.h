@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file    bsp_beep.h
- * @brief   Active buzzer — GPIO PD13, non-blocking (SysTick driven)
+ * @brief   Active buzzer — GPIO PD12, non-blocking (SysTick driven)
  ******************************************************************************
  */
 

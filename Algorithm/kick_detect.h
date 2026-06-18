@@ -48,8 +48,9 @@
 /* -------------------------------------------------------------------------- */
 
 typedef enum {
-    STATE_INIT = 0,         /* Checking initial horizontal posture */
-    STATE_POSTURE_OK,       /* Posture confirmed, monitoring starts */
+    STATE_IDLE = 0,         /* Waiting for key press */
+    STATE_INIT,             /* Checking initial horizontal posture */
+    STATE_POSTURE_OK,       /* Posture confirmed */
     STATE_DETECT            /* Active kick detection */
 } KickState_t;
 
@@ -66,8 +67,9 @@ typedef enum {
 
 void         KickDetect_Init(void);
 void         KickDetect_Process(void);
+void         KickDetect_StartInit(void);   /* 按键触发：进入姿态检测 */
+void         KickDetect_Reset(void);       /* 回到 IDLE */
 KickState_t  KickDetect_GetState(void);
 KickResult_t KickDetect_GetResult(void);
-void         KickDetect_Reset(void);
 
 #endif /* __KICK_DETECT_H__ */

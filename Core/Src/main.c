@@ -27,7 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "bsp_beep.h"
 #include "bsp_key.h"
-#include "bsp_motor.h"
+//#include "bsp_motor.h"
 #include "bsp_ws2812.h"
 #include "bsp_imu.h"
 #include "kick_detect.h"
@@ -101,18 +101,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   /* ---- BSP layer initialization ---- */
-  BSP_Beep_Init();
-  BSP_Motor_Init();
+//  BSP_Motor_Init();
   BSP_WS2812_Init();
   BSP_Key_Init();
   BSP_IMU_Init();
-
-  /* ---- Algorithm ---- */
+	BSP_WS2812_Green();
+//  /* ---- Algorithm ---- */
   KickDetect_Init();
 
-  BSP_WS2812_Off();
   BSP_Beep_Short();   /* 初始化完成提示 */
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -122,16 +119,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-//		BSP_Beep_Process();
+		BSP_Beep_Process();
 
-//		__HAL_TIM_SetAutoreload(&htim4,90-1);
-//		__HAL_TIM_SetCompare(&htim4,TIM_CHANNEL_3,45);
-//		BSP_WS2812_Red();
     if ((HAL_GetTick() - last_key_update_tick) >= 10U)
     {
         last_key_update_tick = HAL_GetTick();
         BSP_Key_Update();
-        if (BSP_Key_Read() == KEY_STATE_PRESSED) KickDetect_Reset();
+        if (BSP_Key_Read() == KEY_STATE_PRESSED) KickDetect_StartInit();
     }
     KickDetect_Process();
 	}
