@@ -27,7 +27,7 @@
 #define WS2812_TIM_PRESCALER        0U
 #define WS2812_BIT0_CCR             30U     /* ~0.42us high (0-code) */
 #define WS2812_BIT1_CCR             60U     /* ~0.83us high (1-code) */
-#define WS2812_RESET_CYCLES         2400U     /* >50us reset → 62.5us */
+#define WS2812_RESET_CYCLES         300U     /* >50us reset → 62.5us */
 
 /* DMA buffer: 24 bits for 1 LED + reset gap */
 #define WS2812_BUF_SIZE             (24U + WS2812_RESET_CYCLES)

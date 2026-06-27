@@ -48,32 +48,28 @@
 /*  Internal state                                                            */
 /* -------------------------------------------------------------------------- */
 
+KickDebug_t kick_dbg;
+
 static KickState_t  kick_state  = STATE_IDLE;
 static KickResult_t kick_result = KICK_RESULT_NONE;
 static uint32_t     state_entry_tick = 0;
 static uint32_t     last_eval_tick   = 0;
 static uint8_t      init_checked = 0;
 
-/* Posture check — baseline orientation captured on transition to DETECT */
 static float baseline_roll  = 0.0f;
 static float baseline_pitch = 0.0f;
 
-/* Kick cycle peak tracking */
-static float    acc_z_min       = 0.0f;
-static float    acc_z_max       = 0.0f;
-static float    roll_min        = 0.0f;
-static float    roll_max        = 0.0f;
-static float    acc_x_drift     = 0.0f;     /* Accumulated horizontal acc integration */
-static float    acc_y_drift     = 0.0f;
-static uint32_t cycle_start_tick = 0;
-static uint8_t  cycle_active    = 0;
-static uint8_t  cycle_has_peak  = 0;
-static uint8_t  cycle_has_trough = 0;
+/* Kick cycle peak tracking (调试可见) */
+float    acc_z_min, acc_z_max;
+float    roll_min,  roll_max;
+uint32_t cycle_start_tick;
+uint8_t  cycle_active, cycle_has_peak, cycle_has_trough;
 
-/* Simplified velocity for zero-crossing detection */
-static float    vel_z_est       = 0.0f;
-static float    acc_z_prev      = 0.0f;
-static uint32_t last_sample_tick = 0;
+/* 三轴积分状态（调试可见） */
+float    vel_x,  vel_y,  vel_z;
+float    pos_x,  pos_y,  pos_z;
+float    pos_z_max, pos_z_min;       /* 周期内位置峰谷 */
+uint32_t last_sample_tick;
 
 /* Detection threshold for acc_z deviation from baseline (start of kick cycle) */
 #define KICK_START_THRESHOLD_MSS   3.0f
@@ -82,9 +78,6 @@ static uint32_t last_sample_tick = 0;
 /*  Internal helpers                                                          */
 /* -------------------------------------------------------------------------- */
 
-/**
- * @brief  Apply feedback and transition to new state
- */
 static void kick_set_state(KickState_t new_state)
 {
     kick_state = new_state;
@@ -92,42 +85,19 @@ static void kick_set_state(KickState_t new_state)
 }
 
 /**
- * @brief  Estimate vertical displacement from acceleration peak-to-peak
- *         and half-cycle duration, using sinusoidal motion model:
- *
- *           disp_cm = (acc_pp * half_period_s² / π²) * 100
- *
- * @param  acc_pp      Peak-to-peak vertical acceleration (m/s²)
- * @param  duration_ms Duration of the detected cycle (ms)
- * @return Estimated peak-to-peak displacement in cm
- */
-static float estimate_displacement_cm(float acc_pp, uint32_t duration_ms)
-{
-    if (duration_ms == 0) return 0.0f;
-
-    float half_period_s = (float)duration_ms / 2000.0f;  /* /2 for half-period, /1000 for ms→s */
-    float pi = 3.14159265f;
-    float disp_m = (acc_pp * half_period_s * half_period_s) / (pi * pi);
-    return disp_m * 100.0f;
-}
-
-/**
  * @brief  Reset kick cycle tracking variables
  */
 static void kick_cycle_reset(void)
 {
-    acc_z_min      = 0.0f;
-    acc_z_max      = 0.0f;
-    roll_min       = 0.0f;
-    roll_max       = 0.0f;
-    acc_x_drift    = 0.0f;
-    acc_y_drift    = 0.0f;
+    acc_z_min  = 0.0f;  acc_z_max  = 0.0f;
+    roll_min   = 0.0f;  roll_max   = 0.0f;
+    vel_x = 0.0f;  vel_y = 0.0f;  vel_z = 0.0f;
+    pos_x = 0.0f;  pos_y = 0.0f;  pos_z = 0.0f;
+    pos_z_max = 0.0f;  pos_z_min = 0.0f;
     cycle_start_tick = 0;
-    cycle_active   = 0;
+    cycle_active = 0;
     cycle_has_peak = 0;
     cycle_has_trough = 0;
-    vel_z_est      = 0.0f;
-    acc_z_prev     = 0.0f;
     last_sample_tick = 0;
 }
 
@@ -136,42 +106,51 @@ static void kick_cycle_reset(void)
  */
 static void kick_cycle_evaluate(void)
 {
-    float acc_pp   = acc_z_max - acc_z_min;           /* Peak-to-peak acc (m/s²) */
-    float roll_chg = roll_max - roll_min;              /* Roll change (deg) */
+    float acc_pp   = acc_z_max - acc_z_min;
+    float roll_chg = roll_max - roll_min;
 
     if (roll_chg < 0.0f) roll_chg = -roll_chg;
 
-    /* Estimate vertical displacement */
-    uint32_t duration_ms = HAL_GetTick() - cycle_start_tick;
-    float amplitude_cm = estimate_displacement_cm(acc_pp, duration_ms);
+    /* 积分得到的位移 */
+    float amplitude_cm = pos_z_max - pos_z_min;
+    float horiz_disp   = (pos_x > 0 ? pos_x : -pos_x) + (pos_y > 0 ? pos_y : -pos_y);
 
-    /* Estimate horizontal displacement (simplified integration of x/y acc) */
-    float horiz_disp = 0.0f;
-    if (acc_x_drift < 0.0f) acc_x_drift = -acc_x_drift;
-    if (acc_y_drift < 0.0f) acc_y_drift = -acc_y_drift;
-    horiz_disp = acc_x_drift + acc_y_drift;
+    /* Update debug metrics */
+    kick_dbg.force    = acc_pp;
+    kick_dbg.roll_chg = roll_chg;
+    kick_dbg.disp_z   = amplitude_cm;
+    kick_dbg.disp_x   = pos_x;
+    kick_dbg.disp_y   = pos_y;
 
     /* Classify the kick */
+    if (amplitude_cm < KICK_AMPLITUDE_MIN_CM)
+    {
+        return;
+    }
     if (amplitude_cm < KICK_AMPLITUDE_THRESHOLD_CM)
     {
-        /* Insufficient amplitude */
+        /* 30~50cm: 幅度不足 */
+        kick_result = KICK_RESULT_BAD_AMPLITUDE;
+        BSP_WS2812_Yellow();
+        BSP_Beep_Short();
+    }
+    else if (horiz_disp > HORIZONTAL_DISPLACEMENT_THRESHOLD_CM)
+    {
         kick_result = KICK_RESULT_BAD_AMPLITUDE;
         BSP_WS2812_Red();
-    }
-    else if (roll_chg > FLIP_ROLL_THRESHOLD_DEG ||
-             horiz_disp > HORIZONTAL_DISPLACEMENT_THRESHOLD_M)
-    {
-        /* Good amplitude but bad form (flip or lateral drift) */
-        kick_result = KICK_RESULT_BAD_FORM;
-        BSP_WS2812_Yellow();
         BSP_Beep_Long();
-//        BSP_Motor_Vibrate();
+    }
+    else if (acc_pp >= KICK_FORCE_WEAK_THRESHOLD)
+    {
+        kick_result = KICK_RESULT_GOOD;
+        kick_dbg.kick_cnt++;
+        BSP_WS2812_Green();
+        BSP_Beep_Short();
     }
     else
     {
-        /* Good kick! */
-        kick_result = KICK_RESULT_GOOD;
-        BSP_WS2812_Green();
+        kick_result = KICK_RESULT_BAD_AMPLITUDE;
+        BSP_WS2812_Yellow();
         BSP_Beep_Short();
     }
 
@@ -189,6 +168,7 @@ void KickDetect_Init(void)
 {
     kick_state  = STATE_IDLE;
     kick_result = KICK_RESULT_NONE;
+    memset(&kick_dbg, 0, sizeof(kick_dbg));
     kick_cycle_reset();
     state_entry_tick = HAL_GetTick();
     last_eval_tick   = 0;
@@ -255,16 +235,7 @@ void KickDetect_Process(void)
         /* Fall through to STATE_DETECT processing */
     }
 
-    /* ---- STATE_DETECT: monitor kick motion ---- */
-
-    /* Check timeout */
-    if ((HAL_GetTick() - state_entry_tick) > KICK_DETECT_TIMEOUT_MS)
-    {
-        /* No activity for too long — go back to IDLE */
-        kick_set_state(STATE_IDLE);
-        kick_result = KICK_RESULT_NONE;
-        return;
-    }
+    /* ---- STATE_DETECT: monitor kick motion (continuous) ---- */
 
     /* Cooldown: don't evaluate immediately after a previous evaluation */
     if (last_eval_tick != 0 &&
@@ -284,19 +255,16 @@ void KickDetect_Process(void)
 
         if (abs_acc > KICK_START_THRESHOLD_MSS)
         {
-            /* Kick cycle started */
+            /* Kick cycle started — reset integration */
             cycle_active    = 1;
             cycle_start_tick = HAL_GetTick();
-            acc_z_min       = acc_z_motion;
-            acc_z_max       = acc_z_motion;
-            roll_min        = imu.roll;
-            roll_max        = imu.roll;
-            acc_x_drift     = 0.0f;
-            acc_y_drift     = 0.0f;
+            acc_z_min  = acc_z_motion;  acc_z_max  = acc_z_motion;
+            roll_min   = imu.roll;       roll_max   = imu.roll;
+            vel_x = 0.0f;  vel_y = 0.0f;  vel_z = 0.0f;
+            pos_x = 0.0f;  pos_y = 0.0f;  pos_z = 0.0f;
+            pos_z_max = 0.0f;  pos_z_min = 0.0f;
             cycle_has_peak  = 0;
             cycle_has_trough = 0;
-            vel_z_est       = 0.0f;
-            acc_z_prev      = acc_z_motion;
             last_sample_tick = imu.timestamp;
         }
         else
@@ -311,7 +279,23 @@ void KickDetect_Process(void)
         return;
     }
 
-    /* ---- Active cycle: accumulate peaks and track orientation ---- */
+    /* ---- Active cycle: integrate acceleration → velocity → position ---- */
+    {
+        float dt = 0.01f;
+        if (last_sample_tick != 0 && imu.timestamp != last_sample_tick)
+        {
+            dt = (float)(imu.timestamp - last_sample_tick) / 1000.0f;
+            if (dt > 0.5f) dt = 0.01f;
+        }
+        /* 梯形积分，位移统一 cm */
+        vel_x += imu.acc_bx * dt;
+        vel_y += imu.acc_by * dt;
+        vel_z += acc_z_motion * dt;
+        pos_x += vel_x * dt * 100.0f;
+        pos_y += vel_y * dt * 100.0f;
+        pos_z += vel_z * dt * 100.0f;
+    }
+    last_sample_tick = imu.timestamp;
 
     /* Update acc_z peaks */
     if (acc_z_motion > acc_z_max) acc_z_max = acc_z_motion;
@@ -321,36 +305,25 @@ void KickDetect_Process(void)
     if (imu.roll > roll_max) roll_max = imu.roll;
     if (imu.roll < roll_min) roll_min = imu.roll;
 
-    /* Accumulate horizontal acceleration (simplified drift proxy) */
-    {
-        float dt = 0.01f;  /* ~100Hz default */
-        if (last_sample_tick != 0 && imu.timestamp != last_sample_tick)
-        {
-            dt = (float)(imu.timestamp - last_sample_tick) / 1000.0f;
-            if (dt > 0.5f) dt = 0.01f;  /* Sanity clamp */
-        }
-        acc_x_drift += imu.acc_bx * dt;
-        acc_y_drift += imu.acc_by * dt;
-    }
+    /* 位置峰谷 */
+    if (pos_z > pos_z_max) pos_z_max = pos_z;
+    if (pos_z < pos_z_min) pos_z_min = pos_z;
+
+    /* 实时更新调试指标 */
+    kick_dbg.force    = acc_z_max - acc_z_min;
+    kick_dbg.disp_z   = (pos_z_max > pos_z_min) ? (pos_z_max - pos_z_min) : (pos_z_min - pos_z_max);
+    kick_dbg.disp_x   = pos_x;
+    kick_dbg.disp_y   = pos_y;
+    kick_dbg.roll_chg = roll_max - roll_min;
     last_sample_tick = imu.timestamp;
 
-    /* Detect peak/trough transitions via velocity zero-crossing */
-    if (cycle_active)
+    /* Detect peak/trough via velocity sign change (integration done above) */
     {
-        /* Simple velocity estimation (leaky integrator) */
-        float dt = 0.01f;
-        float vel_new = vel_z_est + acc_z_motion * dt;
+        static float vel_z_prev = 0.0f;
 
-        /* Detect zero-crossing of velocity (peak reached) */
-        if (vel_z_est > 0.0f && vel_new <= 0.0f)
-        {
-            cycle_has_peak = 1;
-        }
-        if (vel_z_est < 0.0f && vel_new >= 0.0f)
-        {
-            cycle_has_trough = 1;
-        }
-        vel_z_est = vel_new;
+        if (vel_z_prev > 0.0f && vel_z <= 0.0f) cycle_has_peak   = 1;
+        if (vel_z_prev < 0.0f && vel_z >= 0.0f) cycle_has_trough = 1;
+        vel_z_prev = vel_z;
     }
 
     /* Check if cycle is complete (both peak and trough detected) */

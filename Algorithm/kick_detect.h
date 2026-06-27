@@ -22,13 +22,14 @@
 #define POSTURE_HORIZONTAL_THRESHOLD_DEG      15.0f
 
 /* Kick amplitude: peak-to-peak vertical displacement (cm) */
-#define KICK_AMPLITUDE_THRESHOLD_CM           30.0f
+#define KICK_AMPLITUDE_THRESHOLD_CM           50.0f
+#define KICK_AMPLITUDE_MIN_CM                 30.0f
 
 /* Flip detection: roll angle change during one kick cycle (degrees) */
 #define FLIP_ROLL_THRESHOLD_DEG               30.0f
 
 /* Horizontal displacement threshold (m) — estimated lateral drift */
-#define HORIZONTAL_DISPLACEMENT_THRESHOLD_M   0.5f
+#define HORIZONTAL_DISPLACEMENT_THRESHOLD_CM  80.0f
 
 /* Kick force proxy: peak vertical acceleration (m/s²) */
 #define KICK_FORCE_WEAK_THRESHOLD             10.0f
@@ -60,6 +61,21 @@ typedef enum {
     KICK_RESULT_BAD_AMPLITUDE,  /* Kick < 30cm */
     KICK_RESULT_BAD_FORM        /* Kick >= 30cm but flip/excessive lateral movement */
 } KickResult_t;
+
+/* -------------------------------------------------------------------------- */
+/*  Debug metrics (调试可见)                                                   */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    uint16_t kick_cnt;          /* 打腿总次数 */
+    float    disp_x;            /* 最新 X 轴位移 (m) */
+    float    disp_y;            /* 最新 Y 轴位移 (m) */
+    float    disp_z;            /* 最新 Z 轴位移 (cm) */
+    float    force;             /* 最新打腿力度 (m/s², 峰峰值) */
+    float    roll_chg;          /* 最新 roll 变化 (deg) */
+} KickDebug_t;
+
+extern KickDebug_t kick_dbg;
 
 /* -------------------------------------------------------------------------- */
 /*  Public API                                                                */
